@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AirTag Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; display: flex; height: 100vh; }
+  aside { width: 320px; padding: 12px; overflow-y: auto; border-right: 1px solid #ccc; box-sizing: border-box; }
+  #map { flex: 1; }
+  .tag { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin-bottom: 8px; cursor: pointer; }
+  .tag.sel { border-color: #07f; background: #eef5ff; }
+  .tag small { color: #666; display: block; }
+  input, button { font: inherit; padding: 4px 6px; margin: 2px 0; }
+  input { width: 100%; box-sizing: border-box; }
+  h3 { margin: 12px 0 4px; }
+  @media (max-width: 700px) { body { flex-direction: column-reverse; } aside { width: 100%; height: 50%; } }
+</style>
+</head>
+<body>
+<aside>
+  <h3>Tags</h3>
+  <div id="list"></div>
+  <h3>Add AirTag</h3>
+  <input id="name" placeholder="Name (e.g. Keys)">
+  <input id="note" placeholder="Note (optional)">
+  <button id="add">Add</button>
+  <h3>Log sighting</h3>
+  <small>Select a tag, then click the map (or use your location).</small>
+  <button id="here">Use my location</button>
+  <button id="del">Delete selected tag</button>
+</aside>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([20, 0], 2);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+let tags = [], selected = null, layer = L.layerGroup().addTo(map);
+
+const api = (path, method = 'GET', body) =>
+  fetch('/api' + path, { method, body: body && JSON.stringify(body) }).then(r => r.json());
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function load() {
+  tags = await api('/tags');
+  const list = document.getElementById('list');
+  list.innerHTML = tags.map(t => `
+    <div class="tag ${t.id === selected ? 'sel' : ''}" data-id="${t.id}">
+      <b>${esc(t.name)}</b> <small>${esc(t.note)}</small>
+      <small>${t.ts ? 'Last seen ' + new Date(t.ts * 1000).toLocaleString() : 'No sightings yet'}</small>
+    </div>`).join('') || '<small>No tags yet.</small>';
+  list.querySelectorAll('.tag').forEach(el => el.onclick = () => select(+el.dataset.id));
+  draw();
+}
+
+async function draw() {
+  layer.clearLayers();
+  for (const t of tags) {
+    if (t.lat == null) continue;
+    L.marker([t.lat, t.lon]).bindPopup(`<b>${esc(t.name)}</b><br>${new Date(t.ts * 1000).toLocaleString()}`).addTo(layer);
+  }
+  if (selected) {
+    const h = await api(`/tags/${selected}/history`);
+    if (h.length > 1) L.polyline(h.map(p => [p.lat, p.lon]), { color: '#07f' }).addTo(layer);
+  }
+}
+
+function select(id) {
+  selected = id;
+  const t = tags.find(t => t.id === id);
+  if (t && t.lat != null) map.setView([t.lat, t.lon], 14);
+  load();
+}
+
+async function log(lat, lon) {
+  if (!selected) return alert('Select a tag first.');
+  await api(`/tags/${selected}/sightings`, 'POST', { lat, lon });
+  load();
+}
+
+map.on('click', e => log(e.latlng.lat, e.latlng.lng));
+document.getElementById('here').onclick = () =>
+  navigator.geolocation.getCurrentPosition(p => log(p.coords.latitude, p.coords.longitude), e => alert(e.message));
+document.getElementById('add').onclick = async () => {
+  const name = document.getElementById('name').value.trim();
+  if (!name) return;
+  await api('/tags', 'POST', { name, note: document.getElementById('note').value });
+  document.getElementById('name').value = document.getElementById('note').value = '';
+  load();
+};
+document.getElementById('del').onclick = async () => {
+  if (selected && confirm('Delete this tag and its history?')) { await api('/tags/' + selected, 'DELETE'); selected = null; load(); }
+};
+load();
+</script>
+</body>
+</html>
